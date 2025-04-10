@@ -1,0 +1,182 @@
+ 1. Account.java
+package com.example.banking.model;
+
+import jakarta.persistence.*;
+
+@Entity
+public class Account {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private int id;
+
+    private String holderName;
+    private double balance;
+
+    // Constructors, getters, setters
+    public Account() {}
+    public Account(String holderName, double balance) {
+        this.holderName = holderName;
+        this.balance = balance;
+    }
+
+    // Getters and setters...
+}
+
+2. TransactionRecord.java
+
+package com.example.banking.model;
+
+import jakarta.persistence.*;
+import java.util.Date;
+
+@Entity
+public class TransactionRecord {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private int id;
+
+    private double amount;
+    private String status;
+
+    @Temporal(TemporalType.TIMESTAMP)
+    private Date timestamp;
+
+    public TransactionRecord() {
+        this.timestamp = new Date();
+    }
+
+    public TransactionRecord(double amount, String status) {
+        this.amount = amount;
+        this.status = status;
+        this.timestamp = new Date();
+    }
+
+    // Getters and setters...
+}
+
+3. AppConfig.java
+
+package com.example.banking.config;
+
+import com.example.banking.model.Account;
+import com.example.banking.model.TransactionRecord;
+import jakarta.persistence.EntityManagerFactory;
+import org.springframework.context.annotation.*;
+import org.springframework.orm.hibernate5.*;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
+
+import javax.sql.DataSource;
+import org.apache.commons.dbcp2.BasicDataSource;
+
+@Configuration
+@EnableTransactionManagement
+@ComponentScan("com.example.banking")
+public class AppConfig {
+
+    @Bean
+    public DataSource dataSource() {
+        BasicDataSource ds = new BasicDataSource();
+        ds.setDriverClassName("com.mysql.cj.jdbc.Driver");
+        ds.setUrl("jdbc:mysql://localhost:3306/bankdb");
+        ds.setUsername("root");
+        ds.setPassword("password");
+        return ds;
+    }
+
+    @Bean
+    public LocalSessionFactoryBean sessionFactory() {
+        LocalSessionFactoryBean sf = new LocalSessionFactoryBean();
+        sf.setDataSource(dataSource());
+        sf.setPackagesToScan("com.example.banking.model");
+        sf.getHibernateProperties().setProperty("hibernate.dialect", "org.hibernate.dialect.MySQLDialect");
+        sf.getHibernateProperties().setProperty("hibernate.hbm2ddl.auto", "update");
+        return sf;
+    }
+
+    @Bean
+    public HibernateTransactionManager transactionManager(SessionFactory sessionFactory) {
+        return new HibernateTransactionManager(sessionFactory);
+    }
+}
+
+4. BankService.java
+package com.example.banking.service;
+
+import com.example.banking.model.Account;
+import com.example.banking.model.TransactionRecord;
+import org.hibernate.SessionFactory;
+import org.hibernate.Session;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class BankService {
+
+    @Autowired
+    private SessionFactory sessionFactory;
+
+    @Transactional
+    public void transferMoney(int fromId, int toId, double amount) {
+        Session session = sessionFactory.getCurrentSession();
+
+        Account from = session.get(Account.class, fromId);
+        Account to = session.get(Account.class, toId);
+
+        if (from.getBalance() < amount) {
+            System.out.println("Insufficient balance. Rolling back.");
+            session.save(new TransactionRecord(amount, "FAILED"));
+            throw new RuntimeException("Insufficient funds");
+        }
+
+        from.setBalance(from.getBalance() - amount);
+        to.setBalance(to.getBalance() + amount);
+
+        session.update(from);
+        session.update(to);
+
+        session.save(new TransactionRecord(amount, "SUCCESS"));
+        System.out.println("Transaction completed successfully.");
+    }
+}
+
+5. MainApp.java
+package com.example.banking;
+
+import com.example.banking.config.AppConfig;
+import com.example.banking.model.Account;
+import com.example.banking.service.BankService;
+import org.hibernate.Session;
+import org.hibernate.SessionFactory;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+
+public class MainApp {
+    public static void main(String[] args) {
+        var context = new AnnotationConfigApplicationContext(AppConfig.class);
+        var bankService = context.getBean(BankService.class);
+        var sessionFactory = context.getBean(SessionFactory.class);
+
+        // Setup test accounts
+        try (Session session = sessionFactory.openSession()) {
+            session.beginTransaction();
+
+            Account a1 = new Account("Aman", 1000);
+            Account a2 = new Account("Ravi", 500);
+            session.save(a1);
+            session.save(a2);
+
+            session.getTransaction().commit();
+        }
+
+        try {
+            bankService.transferMoney(1, 2, 300); // should succeed
+            bankService.transferMoney(1, 2, 800); // should fail
+        } catch (Exception e) {
+            System.out.println("Caught exception: " + e.getMessage());
+        }
+
+        context.close();
+    }
+}
